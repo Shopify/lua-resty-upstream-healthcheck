@@ -74,8 +74,8 @@ function _M.gen_peer_key(prefix, u, is_backup, id)
     return prefix .. u .. ":p" .. id
 end
 
-local function set_peer_down_globally(ctx, is_backup, id, value)
-    local u = ctx.upstream
+local function set_peer_down_globally(ctx, peer, is_backup, id, value)
+    local u = checked_peers[peer.name]
     local dict = ctx.dict
     local ok, err = set_peer_down(u, is_backup, id, value)
     if not ok then
@@ -96,7 +96,9 @@ end
 local function peer_fail(ctx, is_backup, id, peer)
     debug("peer ", peer.name, " was checked to be not ok")
 
-    local u = ctx.upstream
+    local u = checked_peers[peer.name]
+
+    debug("UPSTREAMUPSTREAM" .. u)
     local dict = ctx.dict
 
     local key = _M.gen_peer_key("nok:", u, is_backup, id)
@@ -145,15 +147,17 @@ local function peer_fail(ctx, is_backup, id, peer)
         warn("peer ", peer.name, " is turned down after ", fails,
                 " failure(s)")
         peer.down = true
-        set_peer_down_globally(ctx, is_backup, id, true)
+        set_peer_down_globally(ctx, peer, is_backup, id, true)
     end
 end
 
 local function peer_ok(ctx, is_backup, id, peer)
     debug("peer ", peer.name, " was checked to be ok")
 
-    local u = ctx.upstream
+    local u = checked_peers[peer.name]
     local dict = ctx.dict
+
+    debug("UPSTREAMUPSTREAM" .. u)
 
     local key = _M.gen_peer_key("ok:", u, is_backup, id)
     local succ, err = dict:get(key)
@@ -198,7 +202,7 @@ local function peer_ok(ctx, is_backup, id, peer)
         warn("peer ", peer.name, " is turned up after ", succ,
                 " success(es)")
         peer.down = nil
-        set_peer_down_globally(ctx, is_backup, id, nil)
+        set_peer_down_globally(ctx, peer, is_backup, id, nil)
     end
 end
 
@@ -386,10 +390,10 @@ end
 
 local function upgrade_peers_version(ctx, peers, is_backup)
     local dict = ctx.dict
-    local u = ctx.upstream
     local n = #peers
     for i = 1, n do
         local peer = peers[i]
+        local u = checked_peers[peers[i].name]
         local id = i - 1
         local key = _M.gen_peer_key("d:", u, is_backup, id)
         local down = false
@@ -715,8 +719,9 @@ function _M.spawn_checker(opts)
         return nil, "failed to create timer: " .. err
     end
 
-    update_upstream_checker_status(u, true)
-
+    for i = 1, n do
+        update_upstream_checker_status(us[i], true)
+    end
     return true
 end
 

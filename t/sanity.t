@@ -1759,9 +1759,9 @@ init_worker_by_lua_block {
                 ngx.log(ngx.ERR, "ALREADY CHECKED: ", primary_peers[i].name, upstream_name)
                 local set_status_key = ""
                 if primary_peers[i].down then
-                    set_status_key = hc.gen_peer_key("nok:", upstream_name, false, i-1)
+                    set_status_key = hc.gen_peer_key("nok:", upstream_name, false, primary_peers[i].id)
                 else
-                    set_status_key = hc.gen_peer_key("ok", upstream_name, false, i-1)
+                    set_status_key = hc.gen_peer_key("ok", upstream_name, false, primary_peers[i].id)
                 end
 
                 local ok, err = ngx.shared.healthcheck:set(set_status_key, 1)
@@ -1797,9 +1797,9 @@ init_worker_by_lua_block {
                 ngx.log(ngx.ERR, "ALREADY CHECKED: ", backup_peers[i].name, upstream_name)
                 local set_status_key = ""
                 if backup_peers[i].down then
-                    set_status_key = hc.gen_peer_key("nok:", upstream_name, true, i-1)
+                    set_status_key = hc.gen_peer_key("nok:", upstream_name, true, backup_peers[i].id)
                 else
-                    set_status_key = hc.gen_peer_key("ok", upstream_name, true, i-1)
+                    set_status_key = hc.gen_peer_key("ok", upstream_name, true, backup_peers[i].id)
                 end
 
                 local ok, err = ngx.shared.healthcheck:set(set_status_key, 1)
