@@ -46,6 +46,7 @@ local get_backup_peers = upstream.get_backup_peers
 local get_upstreams = upstream.get_upstreams
 
 local upstream_checker_statuses = {}
+local checked_peers = {}
 
 local function info(...)
     log(INFO, "healthcheck: ", ...)
@@ -66,7 +67,7 @@ local function debug(...)
     end
 end
 
-local function gen_peer_key(prefix, u, is_backup, id)
+function _M.gen_peer_key(prefix, u, is_backup, id)
     if is_backup then
         return prefix .. u .. ":b" .. id
     end
@@ -85,7 +86,7 @@ local function set_peer_down_globally(ctx, is_backup, id, value)
         ctx.new_version = true
     end
 
-    local key = gen_peer_key("d:", u, is_backup, id)
+    local key = _M.gen_peer_key("d:", u, is_backup, id)
     local ok, err = dict:set(key, value)
     if not ok then
         errlog("failed to set peer down state: ", err)
@@ -98,7 +99,7 @@ local function peer_fail(ctx, is_backup, id, peer)
     local u = ctx.upstream
     local dict = ctx.dict
 
-    local key = gen_peer_key("nok:", u, is_backup, id)
+    local key = _M.gen_peer_key("nok:", u, is_backup, id)
     local fails, err = dict:get(key)
     if not fails then
         if err then
@@ -122,7 +123,7 @@ local function peer_fail(ctx, is_backup, id, peer)
     end
 
     if fails == 1 then
-        key = gen_peer_key("ok:", u, is_backup, id)
+        key = _M.gen_peer_key("ok:", u, is_backup, id)
         local succ, err = dict:get(key)
         if not succ or succ == 0 then
             if err then
@@ -154,7 +155,7 @@ local function peer_ok(ctx, is_backup, id, peer)
     local u = ctx.upstream
     local dict = ctx.dict
 
-    local key = gen_peer_key("ok:", u, is_backup, id)
+    local key = _M.gen_peer_key("ok:", u, is_backup, id)
     local succ, err = dict:get(key)
     if not succ then
         if err then
@@ -178,7 +179,7 @@ local function peer_ok(ctx, is_backup, id, peer)
     end
 
     if succ == 1 then
-        key = gen_peer_key("nok:", u, is_backup, id)
+        key = _M.gen_peer_key("nok:", u, is_backup, id)
         local fails, err = dict:get(key)
         if not fails or fails == 0 then
             if err then
@@ -230,13 +231,11 @@ local function check_peer(ctx, id, peer, is_backup)
         ok, err = sock:connect(name)
     end
     if not ok then
-        return peer_error(ctx, is_backup, id, peer,
-                          "failed to connect to ", name, ": ", err)
+        return peer_error(ctx, is_backup, id, peer, "failed to connect to ", name, ": ", err)
     end
 
     if ctx.type == "https" then
-        local session, err = sock:sslhandshake(ctx.session, name,
-                                               ctx.ssl_verify)
+        session, err = sock:sslhandshake(ctx.session, name, ctx.ssl_verify)
         if not session then
             peer_error(ctx, is_backup, id, peer,
                        "failed to do SSL handshake: ", name, ": ", err)
@@ -388,7 +387,7 @@ local function upgrade_peers_version(ctx, peers, is_backup)
     for i = 1, n do
         local peer = peers[i]
         local id = i - 1
-        local key = gen_peer_key("d:", u, is_backup, id)
+        local key = _M.gen_peer_key("d:", u, is_backup, id)
         local down = false
         local res, err = dict:get(key)
         if not res then
@@ -535,6 +534,14 @@ local function preprocess_peers(peers)
     return peers
 end
 
+local function set_checked_peer(peer_name, u)
+    checked_peers[peer_name] = u
+end
+
+function _M.get_checked_peer(peer_name)
+    return checked_peers[peer_name]
+end
+
 function _M.spawn_checker(opts)
     local typ = opts.type
     if not typ then
@@ -620,6 +627,13 @@ function _M.spawn_checker(opts)
     local bpeers, err = get_backup_peers(u)
     if not bpeers then
         return nil, "failed to get backup peers: " .. err
+    end
+
+    for i = 1, #ppeers do
+        set_checked_peer(ppeers[i].name, u)
+    end
+    for i = 1, #bpeers do
+        set_checked_peer(bpeers[i].name, u)
     end
 
     local ctx = {
