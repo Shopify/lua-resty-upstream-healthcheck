@@ -1741,6 +1741,7 @@ init_worker_by_lua_block {
 
         for i = 1, #primary_peers do
             if hc.get_checked_peer(primary_peers[i].name) == nil then
+                ngx.log(ngx.ERR, "CHECKING: ", primary_peers[i].name, upstream_name)
                 local ok, err = hc.spawn_checker{
                     shm = "healthcheck",
                     upstream = upstream_name,
@@ -1755,6 +1756,7 @@ init_worker_by_lua_block {
                     return
                 end
             else
+                ngx.log(ngx.ERR, "ALREADY CHECKED: ", primary_peers[i].name, upstream_name)
                 local set_status_key = ""
                 if primary_peers[i].down then
                     set_status_key = hc.gen_peer_key("nok:", upstream_name, false, i-1)
@@ -1777,6 +1779,7 @@ init_worker_by_lua_block {
 
         for i = 1, #backup_peers do
             if hc.get_checked_peer(backup_peers[i].name) == nil then
+                ngx.log(ngx.ERR, "CHECKING: ", backup_peers[i].name, upstream_name)
                 local ok, err = hc.spawn_checker{
                     shm = "healthcheck",
                     upstream = upstream_name,
@@ -1791,6 +1794,7 @@ init_worker_by_lua_block {
                     return
                 end
             else
+                ngx.log(ngx.ERR, "ALREADY CHECKED: ", backup_peers[i].name, upstream_name)
                 local set_status_key = ""
                 if backup_peers[i].down then
                     set_status_key = hc.gen_peer_key("nok:", upstream_name, true, i-1)
@@ -1850,6 +1854,8 @@ Upstream bar.com
         127.0.0.1:12356 up
 upstream addr: 127.0.0.1:12354
 upstream addr: 127.0.0.1:12355
+
+--- ONLY
 
 --- no_error_log
 [error]
