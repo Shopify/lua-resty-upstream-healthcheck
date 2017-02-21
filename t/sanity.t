@@ -9,7 +9,7 @@ use Cwd qw(cwd);
 
 #repeat_each(2);
 
-plan tests => repeat_each() * (blocks() * 6 - 18);
+plan tests => repeat_each() * (blocks() * 6 - 2);
 
 my $pwd = cwd();
 
@@ -929,6 +929,7 @@ GET /t
 
 --- response_body
 ok
+
 --- no_error_log
 [alert]
 failed to run healthcheck cycle
@@ -991,6 +992,7 @@ GET /t
 
 --- response_body
 ok
+
 --- no_error_log
 [alert]
 failed to run healthcheck cycle
@@ -1958,6 +1960,480 @@ init_worker_by_lua_block {
             if p12356.checks_fail ~= 8 or p12356.unhealthy ~= true or p12356.checks_ok ~= 0 then
               ngx.exit(500)
             end
+            local p12357 = status_table["bar.com"].backup_peers[1]
+            if p12357.checks_ok ~= 8 or p12357.unhealthy ~= false or p12357.checks_fail ~= 0 then
+              ngx.exit(500)
+            end
+        }
+    }
+--- request
+GET /t
+
+
+
+=== TEST 24: dedup health checks with multiple upstreams
+--- http_config eval
+"$::HttpConfig"
+. q{
+upstream foo.com {
+    server 127.0.0.1:12354;
+    server 127.0.0.1:12355;
+    server 127.0.0.1:12356 backup;
+}
+
+upstream bar.com {
+    server 127.0.0.1:12354;
+    server 127.0.0.1:12355;
+    server 127.0.0.1:12357;
+    server 127.0.0.1:12356 backup;
+}
+
+server {
+    listen 12354;
+    location = /status {
+        return 200;
+    }
+}
+
+server {
+    listen 12355;
+    listen 12357;
+    location = /status {
+        return 404;
+    }
+}
+
+server {
+    listen 12356;
+    location = /status {
+        return 503;
+    }
+}
+
+lua_shared_dict healthcheck 2m;
+init_worker_by_lua_block {
+    ngx.shared.healthcheck:flush_all()
+    local hc = require "resty.upstream.healthcheck"
+    local upstream = require "ngx.upstream"
+
+    for _, upstream_name in ipairs{'foo.com', 'bar.com'} do
+        local ok, err = hc.spawn_checker{
+            shm = "healthcheck",
+            upstream = upstream_name,
+            type = "http",
+            http_req = "GET /status HTTP/1.0\r\nHost: localhost\r\n\r\n",
+            interval = 1000,  -- ms
+            fall = 1,
+            dedup = true
+        }
+        if not ok then
+            ngx.log(ngx.ERR, "failed to spawn health checker: ", err)
+            return
+        end
+    end
+}
+
+}
+--- config
+    location = /t {
+        access_log off;
+        content_by_lua '
+            ngx.sleep(0.52)
+
+            local hc = require "resty.upstream.healthcheck"
+            ngx.print(hc.status_page())
+
+            for i = 1, 2 do
+                local res = ngx.location.capture("/proxy")
+                ngx.say("upstream addr: ", res.header["X-Foo"])
+            end
+        ';
+    }
+
+    location = /proxy {
+        proxy_pass http://foo.com/;
+        header_filter_by_lua '
+            ngx.header["X-Foo"] = ngx.var.upstream_addr;
+        ';
+    }
+--- request
+GET /t
+
+--- response_body
+Upstream foo.com
+    Primary Peers
+        127.0.0.1:12354 up
+        127.0.0.1:12355 up
+    Backup Peers
+        127.0.0.1:12356 up
+
+Upstream bar.com
+    Primary Peers
+        127.0.0.1:12354 up
+        127.0.0.1:12355 up
+        127.0.0.1:12357 up
+    Backup Peers
+        127.0.0.1:12356 up
+upstream addr: 127.0.0.1:12354
+upstream addr: 127.0.0.1:12355
+
+--- no_error_log
+[error]
+[alert]
+[warn]
+was checked to be not ok
+failed to run healthcheck cycle
+--- error_log
+healthcheck: peer 127.0.0.1:12354 was checked to be ok
+healthcheck: peer 127.0.0.1:12355 was checked to be ok
+healthcheck: peer 127.0.0.1:12356 was checked to be ok
+healthcheck: peer 127.0.0.1:12357 was checked to be ok
+
+--- timeout: 6
+
+
+
+=== TEST 25: dedup health checks with multiple upstreams (#peers < concurrency)
+--- http_config eval
+"$::HttpConfig"
+. q{
+upstream foo.com {
+    server 127.0.0.1:12354;
+    server 127.0.0.1:12355;
+    server 127.0.0.1:12356 backup;
+}
+
+upstream bar.com {
+    server 127.0.0.1:12354;
+    server 127.0.0.1:12355;
+    server 127.0.0.1:12357;
+    server 127.0.0.1:12356 backup;
+}
+
+server {
+    listen 12354;
+    location = /status {
+        return 200;
+    }
+}
+
+server {
+    listen 12355;
+    listen 12357;
+    location = /status {
+        return 404;
+    }
+}
+
+server {
+    listen 12356;
+    location = /status {
+        return 503;
+    }
+}
+
+lua_shared_dict healthcheck 2m;
+init_worker_by_lua_block {
+    ngx.shared.healthcheck:flush_all()
+    local hc = require "resty.upstream.healthcheck"
+    local upstream = require "ngx.upstream"
+
+    for _, upstream_name in ipairs{'foo.com', 'bar.com'} do
+        local ok, err = hc.spawn_checker{
+            shm = "healthcheck",
+            upstream = upstream_name,
+            type = "http",
+            http_req = "GET /status HTTP/1.0\r\nHost: localhost\r\n\r\n",
+            interval = 1000,  -- ms
+            fall = 1,
+            concurrency = 10,
+            dedup = true
+        }
+        if not ok then
+            ngx.log(ngx.ERR, "failed to spawn health checker: ", err)
+            return
+        end
+    end
+}
+
+}
+--- config
+    location = /t {
+        access_log off;
+        content_by_lua '
+            ngx.sleep(0.52)
+
+            local hc = require "resty.upstream.healthcheck"
+            ngx.print(hc.status_page())
+
+            for i = 1, 2 do
+                local res = ngx.location.capture("/proxy")
+                ngx.say("upstream addr: ", res.header["X-Foo"])
+            end
+        ';
+    }
+
+    location = /proxy {
+        proxy_pass http://foo.com/;
+        header_filter_by_lua '
+            ngx.header["X-Foo"] = ngx.var.upstream_addr;
+        ';
+    }
+--- request
+GET /t
+
+--- response_body
+Upstream foo.com
+    Primary Peers
+        127.0.0.1:12354 up
+        127.0.0.1:12355 up
+    Backup Peers
+        127.0.0.1:12356 up
+
+Upstream bar.com
+    Primary Peers
+        127.0.0.1:12354 up
+        127.0.0.1:12355 up
+        127.0.0.1:12357 up
+    Backup Peers
+        127.0.0.1:12356 up
+upstream addr: 127.0.0.1:12354
+upstream addr: 127.0.0.1:12355
+
+--- no_error_log
+[error]
+[alert]
+[warn]
+was checked to be not ok
+failed to run healthcheck cycle
+--- error_log
+healthcheck: peer 127.0.0.1:12354 was checked to be ok
+healthcheck: peer 127.0.0.1:12355 was checked to be ok
+healthcheck: peer 127.0.0.1:12356 was checked to be ok
+healthcheck: peer 127.0.0.1:12357 was checked to be ok
+
+--- timeout: 6
+
+
+
+=== TEST 26: dedup health checks with multiple upstreams (#peers > concurrency)
+--- http_config eval
+"$::HttpConfig"
+. q{
+upstream foo.com {
+    server 127.0.0.1:12354;
+    server 127.0.0.1:12355;
+    server 127.0.0.1:12357;
+    server 127.0.0.1:12358;
+    server 127.0.0.1:12356 backup;
+}
+
+upstream bar.com {
+    server 127.0.0.1:12354;
+    server 127.0.0.1:12355;
+    server 127.0.0.1:12357;
+    server 127.0.0.1:12359;
+    server 127.0.0.1:12356 backup;
+}
+
+server {
+    listen 12354;
+    listen 12358;
+    listen 12359;
+    location = /status {
+        return 200;
+    }
+}
+
+server {
+    listen 12355;
+    listen 12357;
+    location = /status {
+        return 404;
+    }
+}
+
+server {
+    listen 12356;
+    location = /status {
+        return 503;
+    }
+}
+
+lua_shared_dict healthcheck 2m;
+init_worker_by_lua_block {
+    ngx.shared.healthcheck:flush_all()
+    local hc = require "resty.upstream.healthcheck"
+    local upstream = require "ngx.upstream"
+
+    for _, upstream_name in ipairs{'foo.com', 'bar.com'} do
+        local ok, err = hc.spawn_checker{
+            shm = "healthcheck",
+            upstream = upstream_name,
+            type = "http",
+            http_req = "GET /status HTTP/1.0\r\nHost: localhost\r\n\r\n",
+            interval = 1000,  -- ms
+            concurrency = 2,
+            fall = 1,
+            dedup = true
+        }
+        if not ok then
+            ngx.log(ngx.ERR, "failed to spawn health checker: ", err)
+            return
+        end
+    end
+}
+
+}
+--- config
+    location = /t {
+        access_log off;
+        content_by_lua '
+            ngx.sleep(0.52)
+
+            local hc = require "resty.upstream.healthcheck"
+            ngx.print(hc.status_page())
+
+            for i = 1, 4 do
+                local res = ngx.location.capture("/proxy")
+                ngx.say("upstream addr: ", res.header["X-Foo"])
+            end
+        ';
+    }
+
+    location = /proxy {
+        proxy_pass http://foo.com/;
+        header_filter_by_lua '
+            ngx.header["X-Foo"] = ngx.var.upstream_addr;
+        ';
+    }
+--- request
+GET /t
+
+--- response_body
+Upstream foo.com
+    Primary Peers
+        127.0.0.1:12354 up
+        127.0.0.1:12355 up
+        127.0.0.1:12357 up
+        127.0.0.1:12358 up
+    Backup Peers
+        127.0.0.1:12356 up
+
+Upstream bar.com
+    Primary Peers
+        127.0.0.1:12354 up
+        127.0.0.1:12355 up
+        127.0.0.1:12357 up
+        127.0.0.1:12359 up
+    Backup Peers
+        127.0.0.1:12356 up
+upstream addr: 127.0.0.1:12354
+upstream addr: 127.0.0.1:12355
+upstream addr: 127.0.0.1:12357
+upstream addr: 127.0.0.1:12358
+
+--- no_error_log
+[error]
+[alert]
+[warn]
+was checked to be not ok
+failed to run healthcheck cycle
+--- error_log
+healthcheck: spawn a thread checking primary peers 0 to 1
+healthcheck: check primary peers 2 to 3
+healthcheck: check primary peer 0
+healthcheck: check backup peer 0
+healthcheck: peer 127.0.0.1:12354 was checked to be ok
+healthcheck: peer 127.0.0.1:12355 was checked to be ok
+healthcheck: peer 127.0.0.1:12357 was checked to be ok
+healthcheck: peer 127.0.0.1:12358 was checked to be ok
+healthcheck: peer 127.0.0.1:12356 was checked to be ok
+healthcheck: peer 127.0.0.1:12359 was checked to be ok
+
+--- timeout: 6
+
+
+
+=== TEST 27: status_table should return peers with correct properties (dedup health checks)
+--- http_config eval
+"$::HttpConfig"
+. q{
+upstream foo.com {
+    server 127.0.0.1:12355;
+}
+upstream bar.com {
+    server 127.0.0.1:12355;
+    server 127.0.0.1:12356;
+    server 127.0.0.1:12357 backup;
+}
+server {
+    listen 12355;
+    location = /status {
+        return 200;
+    }
+}
+server {
+    listen 12356;
+    location = /status {
+        return 404;
+    }
+}
+server {
+    listen 12357;
+    location = /status {
+        return 200;
+    }
+}
+lua_shared_dict healthcheck 1m;
+init_worker_by_lua_block {
+    ngx.shared.healthcheck:flush_all()
+    local hc = require "resty.upstream.healthcheck"
+    upstreams = {"foo.com", "bar.com"}
+    for i = 1,2 do
+      local ok, err = hc.spawn_checker{
+          shm = "healthcheck",
+          upstream = upstreams[i],
+          type = "http",
+          http_req = "GET /status HTTP/1.0\r\nHost: localhost\r\n\r\n",
+          interval = 100,  -- 100ms
+          fall = 2,
+          valid_statuses = {200},
+          dedup = true
+      }
+      if not ok then
+          ngx.log(ngx.ERR, "failed to spawn health checker: ", err)
+          return
+      end
+    end
+}
+}
+--- config
+    location = /t {
+        access_log off;
+        content_by_lua_block {
+            ngx.sleep(0.52)
+            local hc = require "resty.upstream.healthcheck"
+            local status_table = hc.status_table("healthcheck")
+
+            local p12355 = status_table["foo.com"].primary_peers[1]
+            if p12355.checks_ok ~= 6 or p12355.unhealthy ~= false or p12355.checks_fail ~= 0 then
+              ngx.exit(500)
+            end
+
+            ngx.sleep(0.21)
+            status_table = hc.status_table("healthcheck")
+
+            local p12355 = status_table["bar.com"].primary_peers[1]
+            if p12355.checks_ok ~= 1 or p12355.unhealthy ~= false or p12355.checks_fail ~= 0 then
+              ngx.exit(500)
+            end
+
+            local p12356 = status_table["bar.com"].primary_peers[2]
+            if p12356.checks_fail ~= 8 or p12356.unhealthy ~= true or p12356.checks_ok ~= 0 then
+              ngx.exit(500)
+            end
+
             local p12357 = status_table["bar.com"].backup_peers[1]
             if p12357.checks_ok ~= 8 or p12357.unhealthy ~= false or p12357.checks_fail ~= 0 then
               ngx.exit(500)
