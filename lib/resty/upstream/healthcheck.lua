@@ -550,42 +550,6 @@ function _M.get_checked_peer(peer_name)
     return checked_peers[peer_name]
 end
 
-local function get_unique_peers()
-    debug("GET UNIQUE PEERS")
-
-    us, err = get_upstreams()
-    if not us then
-        return nil, "failed to get upstream names: " .. err
-    end
-
-    local n = #us
-    for i = 1, n do
-        local u = us[i]
-
-        ppeers, err = get_primary_peers(u)
-        if not ppeers then
-            return nil, "failed to get primary peers: " .. err
-        end
-
-        for i = 1, #ppeers do
-            if _M.get_checked_peer(ppeers[i].name) == nil then
-                set_checked_peer(ppeers[i].name, u)
-            end
-        end
-
-        bpeers, err = get_backup_peers(u)
-        if not bpeers then
-            return nil, "failed to get backup peers: " .. err
-        end
-
-        for i = 1, #bpeers do
-            if _M.get_checked_peer(bpeers[i].name) == nil then
-                set_checked_peer(bpeers[i].name, u)
-            end
-        end
-    end
-end
-
 function _M.spawn_checker(opts)
     local typ = opts.type
     if not typ then
@@ -663,10 +627,13 @@ function _M.spawn_checker(opts)
         return nil, "no upstream specified"
     end
 
-    get_unique_peers()
-    to_check_ppeers = {}
-    to_check_bpeers = {}
+    local to_check_ppeers = {}
+    local to_check_bpeers = {}
 
+    us, err = get_upstreams()
+    if not us then
+        return nil, "failed to get upstream names: " .. err
+    end
 
     local n = #us
     for i = 1, n do
@@ -678,6 +645,10 @@ function _M.spawn_checker(opts)
         end
 
         for i = 1, #ppeers do
+            set_checked_peer(ppeers[i].name, u)
+        end
+
+        for i = 1, #ppeers do
             if _M.get_checked_peer(ppeers[i].name) ~= nil then
                 to_check_ppeers[i] = ppeers[i]
             end
@@ -686,6 +657,10 @@ function _M.spawn_checker(opts)
         bpeers, err = get_backup_peers(u)
         if not bpeers then
             return nil, "failed to get backup peers: " .. err
+        end
+
+        for i = 1, #bpeers do
+            set_checked_peer(bpeers[i].name, u)
         end
 
         for i = 1, #bpeers do
