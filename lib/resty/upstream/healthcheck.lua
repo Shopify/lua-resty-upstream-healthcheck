@@ -873,16 +873,9 @@ function _M.status_table(shm)
     for i = 1, n do
         local u = us[i]
 
-        local ppeers, err = get_primary_peers(u)
-        if not ppeers then
-            return nil, "failed to get primary peers: " .. err
-        end
-        gen_peers_status_table(dict, ppeers, u, false)
+        ppeers, bpeers = get_all_upstream_peers(u)
 
-        local bpeers, err = get_backup_peers(u)
-        if not bpeers then
-            return nil, "failed to get backup peers: " .. err
-        end
+        gen_peers_status_table(dict, ppeers, u, false)
         gen_peers_status_table(dict, bpeers, u, true)
 
         result[u] = {
