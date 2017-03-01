@@ -2261,7 +2261,7 @@ server {
 }
 
 lua_shared_dict healthcheck 2m;
-init_worker_by_lua_block {
+access_by_lua_block {
     ngx.shared.healthcheck:flush_all()
     local hc = require "resty.upstream.healthcheck"
     local upstream = require "ngx.upstream"
@@ -2277,6 +2277,10 @@ init_worker_by_lua_block {
             fall = 1,
             dedup = true
         }
+
+        -- This is necessary so the upstreams are health checked one after the other
+        ngx.sleep(0.01)
+
         if not ok then
             ngx.log(ngx.ERR, "failed to spawn health checker: ", err)
             return
@@ -2354,8 +2358,7 @@ healthcheck: peer 127.0.0.1:12359 was checked to be ok
 --- timeout: 6
 
 
-
-=== TEST 27: status_table should return peers with correct properties (dedup health checks)
+=== TEST 27: status_table should return peers with correct properties
 --- http_config eval
 "$::HttpConfig"
 . q{
@@ -2399,7 +2402,7 @@ init_worker_by_lua_block {
           interval = 100,  -- 100ms
           fall = 2,
           valid_statuses = {200},
-          dedup = true
+          dedup = true,
       }
       if not ok then
           ngx.log(ngx.ERR, "failed to spawn health checker: ", err)
@@ -2417,7 +2420,7 @@ init_worker_by_lua_block {
             local status_table = hc.status_table("healthcheck")
 
             local p12355 = status_table["foo.com"].primary_peers[1]
-            if p12355.checks_ok ~= 6 or p12355.unhealthy ~= false or p12355.checks_fail ~= 0 then
+            if p12355.checks_ok ~= 7 or p12355.unhealthy ~= false or p12355.checks_fail ~= 0 then
               ngx.exit(500)
             end
 
@@ -2425,17 +2428,16 @@ init_worker_by_lua_block {
             status_table = hc.status_table("healthcheck")
 
             local p12355 = status_table["bar.com"].primary_peers[1]
-            if p12355.checks_ok ~= 1 or p12355.unhealthy ~= false or p12355.checks_fail ~= 0 then
+            if p12355.checks_ok ~= 9 or p12355.unhealthy ~= false or p12355.checks_fail ~= 0 then
               ngx.exit(500)
             end
 
             local p12356 = status_table["bar.com"].primary_peers[2]
-            if p12356.checks_fail ~= 8 or p12356.unhealthy ~= true or p12356.checks_ok ~= 0 then
+            if p12356.checks_fail ~= 9 or p12356.unhealthy ~= true or p12356.checks_ok ~= 0 then
               ngx.exit(500)
             end
-
             local p12357 = status_table["bar.com"].backup_peers[1]
-            if p12357.checks_ok ~= 8 or p12357.unhealthy ~= false or p12357.checks_fail ~= 0 then
+            if p12357.checks_ok ~= 9 or p12357.unhealthy ~= false or p12357.checks_fail ~= 0 then
               ngx.exit(500)
             end
         }
