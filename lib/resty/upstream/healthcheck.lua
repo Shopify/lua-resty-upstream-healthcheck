@@ -92,6 +92,38 @@ local function set_peer_down_globally(ctx, is_backup, id, value)
     end
 end
 
+local function get_all_peers(u)
+    local primary_peers, err = get_primary_peers(u)
+    if not primary_peers then
+        errlog("failed to get primary peers: ", err)
+        return
+    end
+
+    local backup_peers, err = get_backup_peers(u)
+    if not backup_peers then
+        errlog("failed to get backup peers: ", err)
+        return
+    end
+
+    return primary_peers, backup_peers
+end
+
+local function get_unchecked_peers(dict, peers)
+    local peers_to_check = {}
+    for _, peer in ipairs(peers) do
+        if not dict:get('checked_peers_upstream:' .. peer.name) then
+            table.insert(peers_to_check, peer)
+        end
+    end
+    return peers_to_check
+end
+
+local function mark_peers_as_checked(dict, peers, u)
+    for _, peer in ipairs(peers) do
+        dict:set('checked_peers_upstream:' .. peer.name, u)
+    end
+end
+
 local function peer_fail(ctx, is_backup, id, peer)
     debug("peer ", peer.name, " was checked to be not ok")
 
@@ -209,9 +241,41 @@ local function peer_error(ctx, is_backup, id, peer, ...)
   peer_fail(ctx, is_backup, id, peer)
 end
 
-local function check_peer(ctx, id, peer, is_backup)
+local function copy_status_if_checked(peer, is_backup, ctx)
+    local dict = ctx.dict
+    local u = ctx.upstream
+
+    local id = peer.id
+    local set_in_current_upstream = dict:get(gen_peer_key("ok:", u, is_backup, id))
+
+    local checked_peer_upstream = dict:get('checked_peers_upstream:' .. peer.name)
+    local peer_set_in_different_upstream = dict:get(gen_peer_key("ok:", checked_peer_upstream, is_backup, id))
+
+    if set_in_current_upstream or peer_set_in_different_upstream then
+        return peer_ok(ctx, is_backup, id, peer)
+    end
+
+    local noks, _ = dict:get(gen_peer_key("nok:", checked_peer_upstream, is_backup, id))
+    if noks then
+        peer_fail(ctx, is_backup, id, peer)
+    end
+end
+
+local function propogate_peer_status(ctx)
+    local ppeers, bpeers = get_all_peers(ctx.upstream)
+    for _, peer in ipairs(ppeers) do
+        copy_status_if_checked(peer, false, ctx)
+    end
+
+    for _, peer in ipairs(bpeers) do
+        copy_status_if_checked(peer, true, ctx)
+    end
+end
+
+local function check_peer(ctx, peer, is_backup)
     local ok, err
     local name = peer.name
+    local id = peer.id
     local statuses = ctx.statuses
     local req = ctx.http_req
 
@@ -291,7 +355,7 @@ end
 
 local function check_peer_range(ctx, from, to, peers, is_backup)
     for i = from, to do
-        check_peer(ctx, i - 1, peers[i], is_backup)
+        check_peer(ctx, peers[i], is_backup)
     end
 end
 
@@ -304,7 +368,7 @@ local function check_peers(ctx, peers, is_backup)
     local concur = ctx.concurrency
     if concur <= 1 then
         for i = 1, n do
-            check_peer(ctx, i - 1, peers[i], is_backup)
+            check_peer(ctx, peers[i], is_backup)
         end
     else
         local threads
@@ -320,14 +384,14 @@ local function check_peers(ctx, peers, is_backup)
                           is_backup and "backup" or "primary", " peer ", i - 1)
                 end
 
-                threads[i] = spawn(check_peer, ctx, i - 1, peers[i], is_backup)
+                threads[i] = spawn(check_peer, ctx, peers[i], is_backup)
             end
             -- use the current "light thread" to run the last task
             if debug_mode then
                 debug("check ", is_backup and "backup" or "primary", " peer ",
                       n - 1)
             end
-            check_peer(ctx, n - 1, peers[n], is_backup)
+            check_peer(ctx, peers[n], is_backup)
 
         else
             local group_size = ceil(n / concur)
@@ -459,8 +523,21 @@ local function do_check(ctx)
     check_peers_updates(ctx)
 
     if get_lock(ctx) then
-        check_peers(ctx, ctx.primary_peers, false)
-        check_peers(ctx, ctx.backup_peers, true)
+        local ppeers = ctx.primary_peers
+        if ctx.dedup then
+            ppeers = get_unchecked_peers(ctx.dict, ppeers)
+        end
+
+        check_peers(ctx, ppeers, false)
+        mark_peers_as_checked(ctx.dict, ppeers, ctx.upstream)
+
+        local bpeers = ctx.backup_peers
+        if ctx.dedup then
+          bpeers = get_unchecked_peers(ctx.dict, bpeers)
+        end
+
+        check_peers(ctx, bpeers, true)
+        mark_peers_as_checked(ctx.dict, bpeers, ctx.upstream)
     end
 
     if ctx.new_version then
@@ -516,6 +593,9 @@ check = function (premature, ctx)
 
         update_upstream_checker_status(ctx.upstream, false)
         return
+    end
+    if ctx.dedup then
+        propogate_peer_status(ctx)
     end
 end
 
@@ -613,15 +693,7 @@ function _M.spawn_checker(opts)
         return nil, "no upstream specified"
     end
 
-    local ppeers, err = get_primary_peers(u)
-    if not ppeers then
-        return nil, "failed to get primary peers: " .. err
-    end
-
-    local bpeers, err = get_backup_peers(u)
-    if not bpeers then
-        return nil, "failed to get backup peers: " .. err
-    end
+    local ppeers, bpeers = get_all_peers(u)
 
     local ctx = {
         upstream = u,
@@ -641,6 +713,7 @@ function _M.spawn_checker(opts)
         version = 0,
         concurrency = concur,
         session = nil,
+        dedup = opts.dedup,
     }
 
     local ok, err = new_timer(0, check, ctx)
@@ -764,16 +837,8 @@ function _M.status_table(shm)
     for i = 1, n do
         local u = us[i]
 
-        local ppeers, err = get_primary_peers(u)
-        if not ppeers then
-            return nil, "failed to get primary peers: " .. err
-        end
+        ppeers, bpeers = get_all_peers(u)
         gen_peers_status_table(dict, ppeers, u, false)
-
-        local bpeers, err = get_backup_peers(u)
-        if not bpeers then
-            return nil, "failed to get backup peers: " .. err
-        end
         gen_peers_status_table(dict, bpeers, u, true)
 
         result[u] = {
