@@ -251,7 +251,6 @@ local function copy_status_if_checked(peer, is_backup, ctx)
     local checked_peer_upstream = dict:get('checked_peers_upstream:' .. peer.name)
     local peer_set_in_different_upstream = dict:get(gen_peer_key("ok:", checked_peer_upstream, is_backup, id))
 
-
     if set_in_current_upstream or peer_set_in_different_upstream then
         return peer_ok(ctx, is_backup, id, peer)
     end
